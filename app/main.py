@@ -14,11 +14,16 @@ class TaskCreate(BaseModel):
     title: str = Field(min_length=3, max_length=80, examples=["Estudar Actions"])
 
 
+
+
 class Task(TaskCreate):
     """Tarefa devolvida pela API."""
 
     id: int
     done: bool = False
+
+
+
 
 
 tasks: list[Task] = []
