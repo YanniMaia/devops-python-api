@@ -164,6 +164,8 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
+          set -euo pipefail
+
           IMAGE="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
 
           docker build -t "$IMAGE" .
@@ -186,12 +188,30 @@ jobs:
     environment: DES
 
     steps:
+      - name: Validar configuracoes
+        env:
+          EC2_HOST: ${{ vars.EC2_HOST }}
+          EC2_USER: ${{ vars.EC2_USER }}
+          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.EC2_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+
+          for variable in EC2_HOST EC2_USER SSH_PRIVATE_KEY SSH_KNOWN_HOSTS; do
+            if [ -z "${!variable:-}" ]; then
+              echo "ERRO: variável $variable não configurada."
+              exit 1
+            fi
+          done
+
+          echo "Configurações SSH encontradas."
+
       - name: Configurar credenciais AWS
         uses: aws-actions/configure-aws-credentials@v6
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Preparar acesso SSH
@@ -199,6 +219,8 @@ jobs:
           SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
           SSH_KNOWN_HOSTS: ${{ secrets.EC2_SSH_KNOWN_HOSTS }}
         run: |
+          set -euo pipefail
+
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
@@ -223,12 +245,16 @@ jobs:
             --region "$AWS_REGION" |
           ssh -i ~/.ssh/ec2_key \
             -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            -o ConnectTimeout=15 \
             "$EC2_USER@$EC2_HOST" \
             "docker login --username AWS --password-stdin '$REGISTRY'"
 
       - name: Atualizar container na EC2
         env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_HOST: ${{ vars.EC2_HOST }}
           EC2_USER: ${{ vars.EC2_USER }}
           IMAGE_URI: ${{ needs.publish-ecr.outputs.image }}
         run: |
@@ -236,8 +262,13 @@ jobs:
 
           ssh -i ~/.ssh/ec2_key \
             -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            -o ConnectTimeout=15 \
             "$EC2_USER@$EC2_HOST" \
             bash -se -- "$IMAGE_URI" "$CONTAINER_NAME" "$APP_PORT" <<'REMOTE'
+
           set -euo pipefail
 
           IMAGE="$1"
@@ -259,6 +290,7 @@ jobs:
             "$IMAGE"
 
           echo "Verificando saude da aplicacao"
+
           for attempt in {1..20}; do
             if curl --fail --silent \
               "http://127.0.0.1:$PORT/health"; then
@@ -266,12 +298,14 @@ jobs:
               exit 0
             fi
 
+            echo "Tentativa ${attempt}"
             sleep 2
           done
 
           echo "Falha na verificacao de saude"
           docker logs "$NAME"
           exit 1
+
           REMOTE
 
       - name: Confirmar deploy
